@@ -1,64 +1,140 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
 
-// MOCK DATA
-const MOCK_HUBSPOT_RESPONSES = {
-    // Nota: El ID L1001 aparece dos veces intencionalmente para simular un lote con duplicados.
-    leads: {
-        results: [
-            { id: 'L1001', properties: { email: 'juan.perez@spexs.com', firstname: 'Juan', lastname: 'Perez', lifecyclestage: 'lead', createdate: '2024-01-01T10:00:00Z', hs_lastmodifieddate: '2024-10-01T15:00:00Z' } },
-            { id: 'L1002', properties: { email: 'ana.gomez@spexs.com', firstname: 'Ana', lastname: 'Gomez', lifecyclestage: 'customer', createdate: '2024-02-15T12:00:00Z', hs_lastmodifieddate: '2024-10-15T09:00:00Z' } },
-            { id: 'L1003', properties: { email: 'carlos.mora@spexs.com', firstname: 'Carlos', lastname: 'Mora', lifecyclestage: 'lead', createdate: '2024-03-20T11:00:00Z', hs_lastmodifieddate: '2024-03-20T11:00:00Z' } },
-            { id: 'L1001', properties: { email: 'juan.perez.new@spexs.com', firstname: 'Juan', lastname: 'Perez (UPDATED)', lifecyclestage: 'customer', createdate: '2024-01-01T10:00:00Z', hs_lastmodifieddate: '2024-11-05T15:00:00Z' } }, 
-        ],
-        paging: { next: { after: 'next-page-token-leads-2' } }
-    },
-    deals: {
-        results: [
-            { id: 'D2001', properties: { dealname: 'Project Alpha', amount: 15000, dealstage: 'closedwon', closedate: '2024-10-25T11:00:00Z', createdate: '2024-03-01T10:00:00Z', hs_lastmodifieddate: '2024-10-25T11:00:00Z' } },
-            { id: 'D2002', properties: { dealname: 'Client Beta', amount: 5000, dealstage: 'negotiation', closedate: null, createdate: '2024-05-20T14:00:00Z', hs_lastmodifieddate: '2024-10-28T18:00:00Z' } },
-            { id: 'D2003', properties: { dealname: 'Enterprise Gamma', amount: 50000, dealstage: 'closedwon', closedate: '2024-11-01T11:00:00Z', createdate: '2024-06-10T10:00:00Z', hs_lastmodifieddate: '2024-11-01T11:00:00Z' } },
-        ],
-        paging: { next: { after: 'next-page-token-deals-2' } }
-    }
-};
+type AxiosInstance = any; 
+
+export interface HubspotLeadProperties {
+  hubspot_id: string;
+  email: string;
+  firstname: string;
+  lastname: string;
+  phone: string;
+  lifecyclestage: string;
+  createdate: string;
+  lastmodifieddate: string; 
+}
+
+export interface HubspotDealProperties {
+  hubspot_id: string;
+  dealname: string;
+  amount: string;
+  dealstage: string;
+  createdate: string;
+  lastmodifieddate: string;
+  closedate: string | null;
+}
+
+interface HubspotResponse<T> {
+  results: T[];
+  paging?: {
+    next: {
+      after: string;
+      link: string;
+    };
+  };
+}
 
 @Injectable()
 export class HubspotService {
-    private readonly logger = new Logger(HubspotService.name);
-    private readonly apiKey: string = 'HUBSPOT_PRIVATE_APP_TOKEN';
+  private readonly logger = new Logger(HubspotService.name);
+  private readonly client: AxiosInstance; 
+  private readonly baseUrl: string;
 
-    /**
-     * Simula la extracción de Leads con paginación y realiza desduplicación.
-     */
-    async extractAllLeads(): Promise<any[]> {
-        this.logger.log(`[EXTRACT] Iniciando extracción de Leads (simulado).`);
-        const response = MOCK_HUBSPOT_RESPONSES.leads;
-        
-        if (response.paging?.next?.after) {
-            this.logger.warn(`Paginación detectada. En producción, se buclearía hasta obtener todos los datos.`);
-        }
+  constructor(private readonly configService: ConfigService) {
+    this.baseUrl = this.configService.get<string>('HUBSPOT_BASE_URL', 'https://api.hubapi.com');
+    const apiKey = this.configService.get<string>('HUBSPOT_API_KEY');
 
-        // --- Lógica de Desduplicación (Prevención del error ON CONFLICT) ---
-        const dedupedLeadsMap = new Map();
-        
-        for (const lead of response.results) {
-            dedupedLeadsMap.set(lead.id, lead);
-        }
-
-        const dedupedResults = Array.from(dedupedLeadsMap.values());
-
-        this.logger.log(`[EXTRACT] ${response.results.length} Leads extraídos (bruto). Desduplicados: ${dedupedResults.length}`);
-        return dedupedResults;
+    if (!apiKey) {
+      this.logger.error('HUBSPOT_API_KEY no está configurado en .env. La extracción fallará.');
     }
 
-    /**
-     * Simula la extracción de Deals con paginación.
-     */
-    async extractAllDeals(): Promise<any[]> {
-        this.logger.log(`[EXTRACT] Iniciando extracción de Deals (simulado).`);
-        const response = MOCK_HUBSPOT_RESPONSES.deals;
+    this.client = axios.create({
+      baseURL: this.baseUrl,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      validateStatus: (status) => status >= 200 && status < 500,
+    });
+  }
 
-        this.logger.log(`[EXTRACT] ${response.results.length} Deals extraídos.`);
-        return response.results;
-    }
+  private async fetchAllPages<T>(endpoint: string, properties: string[]): Promise<T[]> {
+    this.logger.log(`[EXTRACT] Iniciando extracción de: ${endpoint}`);
+    let allData: T[] = [];
+    let afterToken: string | undefined = undefined;
+
+    do {
+      try {
+        const response = await this.client.get(endpoint, {
+          params: {
+            properties: properties.join(','),
+            limit: 100,
+            ...(afterToken && { after: afterToken }),
+          },
+        });
+
+        if (response.status !== 200) {
+          this.logger.error(`Error ${response.status} al extraer ${endpoint}: ${JSON.stringify(response.data)}`);
+          break;
+        }
+
+        const data = response.data as HubspotResponse<T>;
+        
+        allData = allData.concat(data.results);
+        
+        afterToken = data.paging?.next?.after;
+        if (afterToken) {
+          this.logger.log(`Página extraída. Obteniendo siguiente página usando token: ${afterToken}`);
+        }
+
+      } catch (error) {
+        this.logger.error(`Error de red/conexión al extraer ${endpoint}: ${error}`);
+        break;
+      }
+    } while (afterToken);
+
+    this.logger.log(`[EXTRACT] Extracción de ${endpoint} completada. Total de registros: ${allData.length}`);
+    return allData;
+  }
+
+  async extractAllLeads(): Promise<HubspotLeadProperties[]> {
+    const contactProperties = [
+  'email', 'firstname', 'lastname', 'phone', 'lifecyclestage', 
+  'createdate', 'lastmodifieddate', 'hubspot_owner_id', 
+];
+    
+    const contacts = await this.fetchAllPages<any>('/crm/v3/objects/contacts', contactProperties);
+
+    return contacts.map(c => ({
+      hubspot_id: c.id, 
+      email: c.properties.email || '',
+      firstname: c.properties.firstname || '',
+      lastname: c.properties.lastname || '',
+      phone: c.properties.phone || '',
+      lifecyclestage: c.properties.lifecyclestage || 'new',
+      createdate: c.properties.createdate,
+      lastmodifieddate: c.properties.lastmodifieddate,
+      owner_id: c.properties.hubspot_owner_id || null,
+    }));
+  }
+
+  async extractAllDeals(): Promise<HubspotDealProperties[]> {
+    const dealProperties = [
+      'dealname', 'amount', 'dealstage', 
+      'createdate', 'lastmodifieddate', 'closedate',
+    ];
+    
+    const deals = await this.fetchAllPages<any>('/crm/v3/objects/deals', dealProperties);
+
+    return deals.map(d => ({
+      hubspot_id: d.id, 
+      dealname: d.properties.dealname || '',
+      amount: d.properties.amount || '0', 
+      dealstage: d.properties.dealstage || 'unknown',
+      createdate: d.properties.createdate,
+      lastmodifieddate: d.properties.lastmodifieddate,
+      closedate: d.properties.closedate || null,
+    }));
+  }
 }

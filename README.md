@@ -9,6 +9,7 @@ Este proyecto implementa una solución completa para la extracción, transformac
 | Categoría | Herramienta | Versión |
 | Framework Principal | NestJS | (Actual) |
 | Lenguaje | TypeScript | (Actual) |
+| Cliente API | Axios | (Actual) |
 | Data Warehouse | PostgreSQL | latest (Docker) |
 | ORM / DB Layer | TypeORM | (Actual) |
 | Infraestructura | Docker | (Actual) |
@@ -54,7 +55,17 @@ Docker (para la base de datos).
 
 Recomendado: Cliente REST como Postman o VS Code Thunder Client para probar las APIs.
 
-Paso 1: Configurar PostgreSQL con Docker
+### Paso 1: Configurar Variables de Entorno (Clave API)
+
+1.  Crea un archivo llamado `.env` en la raíz del proyecto.
+2.  Añade las siguientes variables con tu token de acceso:
+
+```env
+# Archivo .env
+HUBSPOT_BASE_URL=https://api.hubapi.com
+HUBSPOT_API_KEY=tu_token_de_acceso_real_de_hubspot (adjunto en el correo electronico)
+
+# Paso 1.2: Configurar PostgreSQL con Docker
 
 Ejecuta estos comandos en tu terminal. El primer comando levanta el contenedor de PostgreSQL, y el segundo crea la base de datos requerida (spexs_dwh).
 
@@ -95,18 +106,14 @@ docker exec -it postgres-spexs psql -U postgres -d spexs_dwh
 SELECT hubspot_id, full_name, life_cycle_stage, updated_at_hubspot FROM hubspot_leads;
 
 
-
-
-(Deberías ver 3 leads únicos, incluyendo el Lead L1001 actualizado y el Lead L1002 con stage 'customer'.)
+(Deberías ver los 4 contactos extraídos. Uno de ellos debe tener el life_cycle_stage como 'customer'.)
 
 # Verificar la tabla de Deals (Transformación is_high_value):
 
 SELECT hubspot_id, name, amount_usd, is_high_value FROM hubspot_deals;
 
 
-
-
-(Deberías ver 3 deals, y los deals con amount_usd >= 10000 deben tener is_high_value = t.)
+(Deberías ver los 2 deals. Los deals con amount_usd >= 10000 deben tener is_high_value = t.)
 
 # Salir de PostgreSQL:
 

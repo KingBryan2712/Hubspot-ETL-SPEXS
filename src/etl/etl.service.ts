@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ObjectLiteral } from 'typeorm';
-import { HubspotService } from './hubspot.service';
+import { HubspotService, HubspotLeadProperties, HubspotDealProperties } from './hubspot.service';
 import { HubspotLead } from '../database/HubspotLead.entity';
 import { HubspotDeal } from '../database/HubspotDeal.entity';
 
@@ -9,7 +9,6 @@ import { HubspotDeal } from '../database/HubspotDeal.entity';
 export class EtlService {
     private readonly logger = new Logger(EtlService.name);
     
-    // Umbral de valor alto para la transformación de Deals
     private readonly HIGH_VALUE_THRESHOLD = 10000; 
 
     constructor(
@@ -23,66 +22,64 @@ export class EtlService {
     // --- Transformación (T) ---
 
     /**
-     * T: Aplica transformaciones a un registro de Lead crudo.
-     * @param rawLead Objeto crudo de la API de HubSpot.
-     * @returns Objeto de entidad limpio y mapeado.
+     * T: Aplica transformaciones a un registro de Lead pre-mapeado.
+     * @param rawLead 
+     * @returns 
      */
-    private transformLead(rawLead: any): HubspotLead {
-        const props = rawLead.properties;
+    private transformLead(rawLead: HubspotLeadProperties): HubspotLead {
         const now = new Date();
 
         const transformedLead = new HubspotLead();
-        transformedLead.hubspot_id = rawLead.id.toString();
-        transformedLead.email = props.email || 'N/A';
         
-        // Transformación 1: Concatenación de nombre completo
-        transformedLead.full_name = `${props.firstname || ''} ${props.lastname || ''}`.trim(); 
         
-        transformedLead.life_cycle_stage = props.lifecyclestage || 'unknown';
-        transformedLead.created_at = new Date(props.createdate);
-        transformedLead.updated_at_hubspot = new Date(props.hs_lastmodifieddate);
+        transformedLead.hubspot_id = rawLead.hubspot_id; 
+        transformedLead.email = rawLead.email || 'N/A';
+        
+        transformedLead.full_name = `${rawLead.firstname || ''} ${rawLead.lastname || ''}`.trim(); 
+        
+        transformedLead.life_cycle_stage = rawLead.lifecyclestage || 'unknown';
+        transformedLead.created_at = new Date(rawLead.createdate);
+        
+        transformedLead.updated_at_hubspot = new Date(rawLead.lastmodifieddate);
         transformedLead.last_etl_run = now; 
         
         return transformedLead;
     }
 
     /**
-     * T: Aplica transformaciones a un registro de Deal crudo.
-     * @param rawDeal Objeto crudo de la API de HubSpot.
-     * @returns Objeto de entidad limpio y mapeado.
-     */
-    private transformDeal(rawDeal: any): HubspotDeal {
-        const props = rawDeal.properties;
-        const now = new Date();
-        
-        const transformedDeal = new HubspotDeal();
-        transformedDeal.hubspot_id = rawDeal.id.toString();
-        transformedDeal.name = props.dealname || 'Untitled Deal';
-        
-        // Transformación 1: Conversión de monto y manejo de nulos (data type consistency)
-        transformedDeal.amount_usd = props.amount ? parseFloat(props.amount) : 0.00; 
+     * T: Aplica transformaciones a un registro de Deal pre-mapeado.
+* @param rawDeal 
+ * @returns 
+ */
+private transformDeal(rawDeal: HubspotDealProperties): HubspotDeal {
+    const now = new Date();
+    
+    const transformedDeal = new HubspotDeal();
 
-        // Transformación 2: Ingeniería de Features - Bandera de alto valor
-        transformedDeal.is_high_value = transformedDeal.amount_usd >= this.HIGH_VALUE_THRESHOLD;
+    transformedDeal.hubspot_id = rawDeal.hubspot_id;
+    transformedDeal.name = rawDeal.dealname || 'Untitled Deal';
+    
+    transformedDeal.amount_usd = rawDeal.amount ? parseFloat(rawDeal.amount) : 0.00; 
 
-        transformedDeal.stage = props.dealstage || 'unknown';
-        transformedDeal.close_date = props.closedate ? new Date(props.closedate) : null;
-        transformedDeal.created_at = new Date(props.createdate);
-        transformedDeal.updated_at_hubspot = new Date(props.hs_lastmodifieddate);
-        transformedDeal.last_etl_run = now; 
+    transformedDeal.is_high_value = transformedDeal.amount_usd >= this.HIGH_VALUE_THRESHOLD;
 
-        return transformedDeal;
-    }
+    transformedDeal.stage = rawDeal.dealstage || 'unknown';
+    
+    transformedDeal.created_at = rawDeal.createdate ? new Date(rawDeal.createdate) : new Date(0); // Usar Date(0) como fallback seguro (Epoch)
+
+    transformedDeal.updated_at_hubspot = rawDeal.lastmodifieddate ? new Date(rawDeal.lastmodifieddate) : new Date(0);
+    
+    transformedDeal.close_date = rawDeal.closedate ? new Date(rawDeal.closedate) : null; 
+
+    transformedDeal.last_etl_run = now; 
+
+    return transformedDeal;
+}
 
     // --- Carga (L) ---
     
     /**
-     * L: Ejecuta la carga de datos en lotes, utilizando la función upsert de TypeORM.
-     * Este enfoque se traduce internamente en la cláusula ON CONFLICT DO UPDATE de PostgreSQL,
-     * garantizando un rendimiento superior a INSERT o UPDATE por separado y asegurando la IDEMPOTENCIA.
-     * @param repository Repositorio de TypeORM (Leads o Deals).
-     * @param entities Array de entidades transformadas.
-     * @param conflictPath Columna PK para el conflicto (siempre 'hubspot_id').
+     * L: Ejecuta la carga de datos en lotes (UPSERT).
      */
     private async upsertBatch<T extends ObjectLiteral>( 
         repository: Repository<T>, 
